@@ -14,6 +14,9 @@ outputs/
 environments/*/outputs/
 
 .hf_cache/
-.prime/
+.prime/*
+!.prime/skills/
+!.prime/skills/**
 environments/*/.prime/
 .claude/
+.cursor/skills/

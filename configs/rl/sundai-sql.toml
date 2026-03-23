@@ -1,4 +1,6 @@
-model = "Qwen/Qwen2.5-Coder-7B-Instruct"
+# Qwen2.5-Coder-7B not on hosted RL. If a model returns 429 (capacity), switch to
+# another entry from `prime rl` / dashboard model list.
+model = "Qwen/Qwen3-4B-Instruct-2507"
 max_steps = 250
 batch_size = 256
 rollouts_per_example = 8

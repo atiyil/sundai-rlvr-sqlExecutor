@@ -14,17 +14,41 @@ from datasets.exceptions import DatasetNotFoundError
 _THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
 _SQL_BLOCK = re.compile(r"<sql>\s*(.*?)\s*</sql>", re.DOTALL | re.IGNORECASE)
 
-SYSTEM_PROMPT_TEMPLATE = """You are an expert Text-to-SQL assistant. Given a SQLite schema and a question, write a single correct SELECT query.
+BUNDLED_DB_IDS: tuple[str, ...] = ("superhero", "student_club", "toxicology")
 
-Database schema:
-{schema}
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are an expert Text-to-SQL assistant. Given a SQLite schema and a question, write a single correct SELECT query.\n\n"
+    "Database schema:\n{schema}\n\n"
+    "Question:\n{question}\n\n"
+    "Respond using this exact structure:\n"
+    "1. Put your reasoning inside \u003Cthink\u003E ... \u003C/think\u003E\n"
+    "2. Put exactly one SQL statement inside <sql>...</sql>"
+)
 
-Question:
-{question}
 
-Respond using this exact structure:
-1. Put your reasoning inside <think> ... </think>
-2. Put exactly one SQL statement inside <sql>...</sql>"""
+def _package_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _bundled_sqlite_path(db_id: str) -> Path:
+    return _package_dir() / "databases" / db_id / f"{db_id}.sqlite"
+
+
+def _bundled_databases_ready(db_ids: tuple[str, ...]) -> bool:
+    return all(_bundled_sqlite_path(d).is_file() for d in db_ids)
+
+
+def _ddl_from_sqlite(db_path: str) -> str:
+    conn = sqlite3.connect(f"file:{Path(db_path).resolve().as_posix()}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT sql FROM sqlite_master WHERE type IN ('table','view') "
+            "AND sql IS NOT NULL ORDER BY name"
+        )
+        return "\n".join(row[0] for row in cur.fetchall() if row[0])
+    finally:
+        conn.close()
 
 
 def _assistant_content(completion: vf.Messages) -> str:
@@ -69,6 +93,9 @@ def _parse_think_sql(text: str) -> tuple[str | None, str | None]:
 
 
 def _resolve_bird_sqlite(db_id: str, bird_db_root: str | None) -> str | None:
+    bundled = _bundled_sqlite_path(db_id)
+    if bundled.is_file():
+        return str(bundled.resolve())
     if not bird_db_root:
         return None
     root = Path(bird_db_root).expanduser()
@@ -142,7 +169,21 @@ def _load_bird_table(
         return load_dataset("xu3kev/BIRD-SQL-data-train", split=split)
 
 
-def _build_rows(ds: Dataset) -> list[dict]:
+def _train_dev_ranges(n: int, train_rows: int, dev_rows: int) -> tuple[range, range]:
+    if n <= 0:
+        raise ValueError("empty dataset after filter")
+    need = train_rows + dev_rows
+    if n >= need:
+        return range(0, train_rows), range(train_rows, train_rows + dev_rows)
+    n_train = min(train_rows, max(1, int(n * 0.85)))
+    n_dev = min(dev_rows, n - n_train)
+    if n_dev < 1:
+        n_dev = 1
+        n_train = n - n_dev
+    return range(0, n_train), range(n_train, n_train + n_dev)
+
+
+def _build_rows_xu(ds: Dataset) -> list[dict]:
     rows: list[dict] = []
     for item in ds:
         rows.append(
@@ -163,6 +204,31 @@ def _build_rows(ds: Dataset) -> list[dict]:
     return rows
 
 
+def _build_rows_mini_dev(ds: Dataset, paths: dict[str, str]) -> list[dict]:
+    schema_cache: dict[str, str] = {}
+    rows: list[dict] = []
+    for item in ds:
+        db_id = item["db_id"]
+        if db_id not in schema_cache:
+            schema_cache[db_id] = _ddl_from_sqlite(paths[db_id])
+        rows.append(
+            {
+                "prompt": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT_TEMPLATE.format(
+                            schema=schema_cache[db_id],
+                            question=item["question"],
+                        ),
+                    },
+                ],
+                "answer": item["SQL"],
+                "info": json.dumps({"db_id": db_id}),
+            }
+        )
+    return rows
+
+
 def load_environment(
     hf_dataset: str = "xlangai/BIRD",
     hf_config: str | None = None,
@@ -171,25 +237,42 @@ def load_environment(
     seed: int = 42,
     bird_db_root: str | None = None,
     query_timeout_s: float = 2.0,
+    use_bundled_databases: bool = True,
+    bundled_db_ids: tuple[str, ...] | None = None,
     **kwargs,
 ) -> vf.SingleTurnEnv:
     bird_db_root = bird_db_root or os.environ.get("BIRD_DB_ROOT")
+    db_ids = bundled_db_ids if bundled_db_ids is not None else BUNDLED_DB_IDS
 
-    raw_train = _load_bird_table(hf_dataset, hf_config, "train")
-    raw_train = raw_train.shuffle(seed=seed)
-    n_train = min(train_rows, len(raw_train))
-    train_ds = Dataset.from_list(_build_rows(raw_train.select(range(n_train))))
-
-    start = n_train
-    end = start + dev_rows
-    if end <= len(raw_train):
-        dev_slice = raw_train.select(range(start, end))
+    if use_bundled_databases and _bundled_databases_ready(db_ids):
+        raw = load_dataset("birdsql/bird_mini_dev", split="mini_dev_sqlite")
+        allow = set(db_ids)
+        raw = raw.filter(lambda x: x["db_id"] in allow)
+        paths = {d: str(_bundled_sqlite_path(d).resolve()) for d in db_ids}
+        shuffled = raw.shuffle(seed=seed)
+        r_train, r_dev = _train_dev_ranges(len(shuffled), train_rows, dev_rows)
+        train_ds = Dataset.from_list(
+            _build_rows_mini_dev(shuffled.select(list(r_train)), paths)
+        )
+        eval_ds = Dataset.from_list(
+            _build_rows_mini_dev(shuffled.select(list(r_dev)), paths)
+        )
     else:
-        extra = _load_bird_table(hf_dataset, hf_config, "train")
-        extra = extra.shuffle(seed=seed + 1)
-        dev_slice = extra.select(range(min(dev_rows, len(extra))))
+        raw_train = _load_bird_table(hf_dataset, hf_config, "train")
+        raw_train = raw_train.shuffle(seed=seed)
+        n_train = min(train_rows, len(raw_train))
+        train_ds = Dataset.from_list(_build_rows_xu(raw_train.select(range(n_train))))
 
-    eval_ds = Dataset.from_list(_build_rows(dev_slice))
+        start = n_train
+        end = start + dev_rows
+        if end <= len(raw_train):
+            dev_slice = raw_train.select(range(start, end))
+        else:
+            extra = _load_bird_table(hf_dataset, hf_config, "train")
+            extra = extra.shuffle(seed=seed + 1)
+            dev_slice = extra.select(range(min(dev_rows, len(extra))))
+
+        eval_ds = Dataset.from_list(_build_rows_xu(dev_slice))
 
     parser = vf.XMLParser(["sql"], answer_field="sql")
 

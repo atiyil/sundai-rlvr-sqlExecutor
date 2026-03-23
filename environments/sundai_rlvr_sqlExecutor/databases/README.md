@@ -1,0 +1,1 @@
+Bundled SQLite files are the BIRD **template** databases from Hugging Face dataset `birdsql/bird-critic-1.0-sqlite` (`{db_id}_template.sqlite`, stored as `{db_id}.sqlite`). Training/eval text and gold SQL come from `birdsql/bird_mini_dev` split `mini_dev_sqlite`, filtered to these `db_id`s.

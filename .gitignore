@@ -12,6 +12,8 @@ wheels/
 # outputs from `prime eval run`
 outputs/
 environments/*/outputs/
+environments/*/databases/**/*.sqlite-shm
+environments/*/databases/**/*.sqlite-wal
 
 .hf_cache/
 .prime/*

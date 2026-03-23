@@ -11,7 +11,14 @@ import verifiers as vf
 from datasets import Dataset, load_dataset
 from datasets.exceptions import DatasetNotFoundError
 
-_THINK_BLOCK = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+# Second pattern: Qwen redacted_reasoning blocks.
+_THINK_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE),
+    re.compile(
+        r"<redacted_reasoning>(.*?)</redacted_reasoning>",
+        re.DOTALL | re.IGNORECASE,
+    ),
+)
 _SQL_BLOCK = re.compile(r"<sql>\s*(.*?)\s*</sql>", re.DOTALL | re.IGNORECASE)
 
 BUNDLED_DB_IDS: tuple[str, ...] = ("superhero", "student_club", "toxicology")
@@ -21,7 +28,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Database schema:\n{schema}\n\n"
     "Question:\n{question}\n\n"
     "Respond using this exact structure:\n"
-    "1. Put your reasoning inside \u003Cthink\u003E ... \u003C/think\u003E\n"
+    "1. Put your reasoning inside \u003Cthink\u003E ... \u003C/think\u003E, "
+    "or inside \u003Credacted_reasoning\u003E ... \u003C/redacted_reasoning\u003E\n"
     "2. Put exactly one SQL statement inside <sql>...</sql>"
 )
 
@@ -81,14 +89,21 @@ def _normalize_sql(sql: str | None) -> str | None:
     return s or None
 
 
+def _extract_think(text: str) -> str | None:
+    for pat in _THINK_PATTERNS:
+        m = pat.search(text)
+        if m:
+            t = m.group(1).strip()
+            if t:
+                return t
+    return None
+
+
 def _parse_think_sql(text: str) -> tuple[str | None, str | None]:
-    tm = _THINK_BLOCK.search(text)
+    think = _extract_think(text)
     sm = _SQL_BLOCK.search(text)
-    think = tm.group(1).strip() if tm else None
     sql = sm.group(1).strip() if sm else None
     sql = _normalize_sql(sql)
-    if think == "":
-        think = None
     return think, sql
 
 

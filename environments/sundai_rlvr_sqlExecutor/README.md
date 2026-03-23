@@ -1,6 +1,6 @@
 # sundai-rlvr-sqlExecutor
 
-> Replace the placeholders below, then remove this callout.
+**Prime Intellect Hub:** The Environments integration test requires a real `project.description` in `pyproject.toml` (not the template string `Your environment description here`). That metadata fix is in place so CI passes on push.
 
 ### Overview
 - **Environment ID**: `sundai-rlvr-sqlExecutor`

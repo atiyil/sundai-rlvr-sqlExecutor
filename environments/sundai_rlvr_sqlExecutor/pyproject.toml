@@ -1,7 +1,7 @@
 [project]
 name = "sundai-rlvr-sqlExecutor"
-description = "Your environment description here"
-tags = ["placeholder-tag", "train", "eval"]
+description = "Text-to-SQL RLVR with BIRD-style examples, SQLite execution rewards, and structured think/sql outputs."
+tags = ["single-turn", "text-to-sql", "sqlite", "bird", "train", "eval"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
